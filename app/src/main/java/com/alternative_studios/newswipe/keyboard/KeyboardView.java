@@ -513,6 +513,7 @@ public final class KeyboardView extends View {
             }
             y += rh;
         }
+        if (touchModel != null && touchModelMovesKeys && !calibrationAttached()) moveKeys(touchModel);
     }
 
     /** 색 정렬: Shift·⌫는 글자 키 색, 스페이스바는 기능키 색, Shift 고정은 강조색 없이. */
@@ -530,6 +531,242 @@ public final class KeyboardView extends View {
     public void setHitShrink(float deleteFraction, float spaceFraction) {
         deleteShrink = deleteFraction;
         spaceShrink = spaceFraction;
+    }
+
+    // ---------------------------------------------------------------- 터치 보정
+
+    /** 지금 파지법의 터치 보정 결과. 쓰지 않으면 null. */
+    private TouchModel touchModel;
+    /** true면 키를 손가락이 닿는 곳으로 옮겨 그린다 (자판 모양 보정). false면 키는 그대로 두고 닿은 곳만 고쳐 읽는다 (터치 위치 보정). */
+    private boolean touchModelMovesKeys;
+    /** 보정 화면의 입력란에 붙어 있는 동안의 보정. 그동안은 보정 결과를 쓰지 않고 원래 자판에서 입력을 모은다. */
+    private CalibrationSession calibration;
+    private final float[] corrected = new float[2];
+
+    /** 터치 보정 결과를 쓴다 (null이면 쓰지 않는다). */
+    public void setTouchModel(TouchModel model, boolean movesKeys) {
+        if (touchModel == null && model == null && touchModelMovesKeys == movesKeys) return;
+        touchModel = model;
+        touchModelMovesKeys = movesKeys;
+        layoutKeys(getWidth(), getHeight());
+        invalidate();
+    }
+
+    /**
+     * 보정 화면의 입력란에 붙었다 (s가 null이면 떨어졌다). 문장을 치는 동안에는 키를 그리지 않고, 손가락이 닿을 때마다
+     * 글자를 입력하는 대신 지금 쳐야 할 글자의 키와 닿은 곳을 기록한다.
+     * @param grip 지금의 파지법 (Prefs.gripId)
+     */
+    public void setCalibration(CalibrationSession s, String grip) {
+        if (calibration != s) cancelAll();
+        calibration = s;
+        if (s != null) s.attach(grip);
+        layoutKeys(getWidth(), getHeight());
+        invalidate();
+    }
+
+    /** 보정의 키 보이기·끝남이 바뀌었다. */
+    public void onCalibrationChanged() {
+        if (calibration != null && calibration.ended()) calibration = null;
+        layoutKeys(getWidth(), getHeight());
+        invalidate();
+    }
+
+    /** 보정 화면에 붙어 있는 동안 (보정 결과를 쓰지 않고 원래 자판을 쓴다). */
+    private boolean calibrationAttached() {
+        return calibration != null && !calibration.ended();
+    }
+
+    /** 보정 문장을 치는 중 (키를 그리지 않고 입력을 모은다). */
+    private boolean calibrating() {
+        return calibration != null && calibration.running();
+    }
+
+    /** 손가락이 닿은 곳에서 누르려던 키. 터치 위치 보정을 쓰면 닿은 곳을 누르려던 곳으로 고쳐 읽는다. */
+    private Key keyAtTouch(float x, float y) {
+        if (touchModel == null || touchModelMovesKeys || calibrationAttached()) return keyAt(x, y);
+        float iw = getWidth() - padL - padR, ih = getHeight() - padT - padB;
+        if (iw <= 0 || ih <= 0) return keyAt(x, y);
+        touchModel.target((x - padL) / iw, (y - padT) / ih, corrected);
+        return keyAt(padL + corrected[0] * iw, padT + corrected[1] * ih);
+    }
+
+    /**
+     * 자판 모양 보정: 키를 손가락이 닿는 곳으로 옮긴다. 줄은 위아래로, 키는 줄 안에서 좌우로 경계를 옮겨 빈틈 없이 잇는다.
+     * 맨 위·맨 아래 경계와 자판 좌우 끝은 넘지 않고, 키가 너무 좁아지거나 넓어지면 옮기는 정도를 줄인다.
+     */
+    private void moveKeys(TouchModel m) {
+        float w = getWidth(), h = getHeight();
+        float iw = w - padL - padR, ih = h - padT - padB;
+        if (layout == null || iw <= 0 || ih <= 0) return;
+        KeyboardLayout.Row[] rows = layout.rows;
+        int n = rows.length;
+        float[] o = new float[2];
+        float[] dy = new float[n], top = new float[n], bottom = new float[n], rowV = new float[n];
+        for (int i = 0; i < n; i++) {
+            Key[] keys = rows[i].keys;
+            if (keys.length == 0) continue;
+            top[i] = keys[0].rect.top;
+            bottom[i] = keys[0].rect.bottom;
+            rowV[i] = (keys[0].rect.centerY() - padT) / ih;
+            float sum = 0;
+            for (Key k : keys) {
+                m.offset((k.rect.centerX() - padL) / iw, rowV[i], o);
+                sum += o[1] * ih;
+            }
+            float limit = (bottom[i] - top[i]) * 0.45f;
+            dy[i] = Math.max(-limit, Math.min(limit, sum / keys.length));
+        }
+        // 줄 경계: 맨 위·맨 아래는 그대로 두고, 줄 사이 경계는 위아래 두 줄이 옮겨 가는 정도의 평균만큼 옮긴다.
+        float[] newTop = new float[n], newBottom = new float[n];
+        for (float scale : SHIFT_SCALES) {
+            boolean ok = true;
+            for (int i = 0; i < n; i++) {
+                newTop[i] = i == 0 ? top[i] : top[i] + scale * (dy[i - 1] + dy[i]) / 2f;
+                newBottom[i] = i == n - 1 ? bottom[i] : bottom[i] + scale * (dy[i] + dy[i + 1]) / 2f;
+                if (newBottom[i] - newTop[i] < (bottom[i] - top[i]) * 0.6f) ok = false;
+            }
+            if (ok) break;
+        }
+        for (int i = 0; i < n; i++) {
+            Key[] keys = rows[i].keys;
+            int m2 = keys.length;
+            if (m2 == 0) continue;
+            // 키 경계 m2+1개: 왼쪽 끝, 키 사이, 오른쪽 끝 (줄의 키는 빈틈 없이 붙어 있다).
+            float[] edge = new float[m2 + 1], shift = new float[m2 + 1], moved = new float[m2 + 1];
+            for (int j = 0; j < m2; j++) edge[j] = keys[j].rect.left;
+            edge[m2] = keys[m2 - 1].rect.right;
+            for (int j = 0; j <= m2; j++) {
+                m.offset((edge[j] - padL) / iw, rowV[i], o);
+                shift[j] = o[0] * iw;
+            }
+            for (float scale : SHIFT_SCALES) {
+                boolean ok = true;
+                for (int j = 0; j <= m2; j++) moved[j] = Math.max(padL, Math.min(w - padR, edge[j] + scale * shift[j]));
+                for (int j = 0; j < m2; j++) {
+                    float before = edge[j + 1] - edge[j], after = moved[j + 1] - moved[j];
+                    if (before > 0 && (after < before * 0.6f || after > before * 1.6f)) ok = false;
+                }
+                if (ok) break;
+            }
+            for (int j = 0; j < m2; j++) keys[j].rect.set(moved[j], newTop[i], moved[j + 1], newBottom[i]);
+        }
+    }
+
+    /** 자판 모양 보정에서 키가 너무 좁아지거나 넓어질 때 옮기는 정도를 이만큼씩 줄여 본다 (마지막 0은 옮기지 않음). */
+    private static final float[] SHIFT_SCALES = {1f, 0.5f, 0.25f, 0f};
+
+    /** 보정 문장을 치는 중에 손가락이 닿았다: 지금 쳐야 할 글자의 키와 닿은 곳을 기록한다. */
+    private void calibrationTap(float x, float y) {
+        CalibrationSession s = calibration;
+        Key target = null;
+        // 지금 자판에 없는 글자(스페이스바를 없앴을 때의 띄어쓰기 등)는 건너뛴다.
+        while (s.running() && (target = calibrationKey(s.target(), x, y)) == null) s.skip();
+        if (target != null) {
+            if (listener != null) listener.onKeyPress(target);   // 진동·소리는 평소처럼
+            s.record(new CalibrationSession.Sample(x, y, target.rect.centerX(), target.rect.centerY(),
+                    target.rect.width(), target.rect.height(), calibrationLabel(target),
+                    padL, padT, getWidth() - padL - padR, getHeight() - padT - padB));
+            while (s.running() && calibrationKey(s.target(), x, y) == null) s.skip();
+        }
+        if (s.typed()) finishCalibration();
+    }
+
+    /**
+     * 글자 text를 칠 때 누르는 키. 그 글자가 적힌 키가 없으면 밀어서 그 글자를 입력하는 키 (NewSwipe 단모음의 ㅊ·ㅌ 등).
+     * 같은 글자의 키가 여럿이면(분리 키보드의 좌·우 균형 레이아웃) 닿은 곳에 가까운 키. 없으면 null.
+     */
+    private Key calibrationKey(String text, float x, float y) {
+        if (layout == null || text == null) return null;
+        for (int pass = 0; pass < 2; pass++) {
+            Key best = null;
+            float bestDist = Float.MAX_VALUE;
+            for (KeyboardLayout.Row row : layout.rows) {
+                for (Key k : row.keys) {
+                    boolean match;
+                    if (" ".equals(text)) {
+                        match = pass == 0 && k.type == Key.SPACE;
+                    } else if (k.type != Key.CHAR) {
+                        match = false;
+                    } else if (pass == 0) {
+                        match = text.equals(k.label);
+                    } else {
+                        match = false;
+                        for (int dir = Key.SWIPE_DOWN; dir <= Key.SWIPE_RIGHT; dir++) {
+                            if (text.equals(k.swipeText(dir))) match = true;
+                        }
+                    }
+                    if (!match) continue;
+                    float dx = k.rect.centerX() - x, dy = k.rect.centerY() - y;
+                    float d = dx * dx + dy * dy;
+                    if (d < bestDist) {
+                        bestDist = d;
+                        best = k;
+                    }
+                }
+            }
+            if (best != null) return best;
+        }
+        return null;
+    }
+
+    /** 보정 효과를 잴 때 두 키가 같은 키인지 견주는 이름 (스페이스바는 " "). */
+    private static String calibrationLabel(Key k) {
+        return k == null ? null : k.type == Key.SPACE ? " " : k.label;
+    }
+
+    /**
+     * 문장을 다 쳤다: 모은 입력으로 보정 결과를 맞추고, 보정하지 않았을 때·터치 위치 보정·자판 모양 보정에서
+     * 그 입력이 누르려던 키에 닿았을 비율을 지금 자판으로 재 본 뒤 보정에 넘긴다.
+     */
+    private void finishCalibration() {
+        CalibrationSession s = calibration;
+        java.util.List<CalibrationSession.Sample> list = s.samples();
+        int n = list.size();
+        float[] tu = new float[n], tv = new float[n], du = new float[n], dv = new float[n], kw = new float[n], kh = new float[n];
+        for (int i = 0; i < n; i++) {
+            CalibrationSession.Sample p = list.get(i);
+            tu[i] = (p.keyX - p.left) / p.width;
+            tv[i] = (p.keyY - p.top) / p.height;
+            du[i] = (p.x - p.keyX) / p.width;
+            dv[i] = (p.y - p.keyY) / p.height;
+            kw[i] = p.keyW / p.width;
+            kh[i] = p.keyH / p.height;
+        }
+        boolean[] used = new boolean[n];
+        TouchModel m = TouchModel.fit(tu, tv, du, dv, kw, kh, n, used);
+        if (m != null) {
+            // 자판 크기가 그대로인 입력만 잰다 (보정 도중 설정을 바꿨으면 그 전 입력은 뺀다).
+            float iw = getWidth() - padL - padR, ih = getHeight() - padT - padB;
+            boolean[] same = new boolean[n];
+            int total = 0, raw = 0, touch = 0, moved = 0;
+            for (int i = 0; i < n; i++) {
+                CalibrationSession.Sample p = list.get(i);
+                same[i] = used[i] && p.left == padL && p.top == padT && p.width == iw && p.height == ih;
+                if (!same[i]) continue;
+                total++;
+                if (p.label.equals(calibrationLabel(keyAt(p.x, p.y)))) raw++;
+                m.target((p.x - padL) / iw, (p.y - padT) / ih, corrected);
+                if (p.label.equals(calibrationLabel(keyAt(padL + corrected[0] * iw, padT + corrected[1] * ih)))) touch++;
+            }
+            moveKeys(m);
+            for (int i = 0; i < n; i++) {
+                CalibrationSession.Sample p = list.get(i);
+                if (same[i] && p.label.equals(calibrationLabel(keyAt(p.x, p.y)))) moved++;
+            }
+            layoutKeys(getWidth(), getHeight());   // 보정 화면에 붙어 있는 동안은 원래 자판으로 되돌린다
+            m.rawHitPct = percent(raw, total);
+            m.touchHitPct = percent(touch, total);
+            m.layoutHitPct = percent(moved, total);
+            m.time = System.currentTimeMillis();
+        }
+        s.complete(m);
+        invalidate();
+    }
+
+    /** 비율(%). 잴 입력이 없으면 -1. */
+    private static int percent(int part, int total) {
+        return total == 0 ? -1 : Math.round(part * 100f / total);
     }
 
     private Key keyAt(float x, float y) {
@@ -611,6 +848,8 @@ public final class KeyboardView extends View {
         // 미리보기가 위로 넘어가려고 클리핑을 껐으므로, drawColor를 쓰면 위쪽 툴바까지 덮어 버린다.
         fill.setColor(theme.background);
         c.drawRect(0, 0, getWidth(), getHeight(), fill);
+        // 보정 문장을 치는 중에는 키를 그리지 않는다 (키 모양 보이기를 켜면 글자 없이 키 모양만).
+        if (calibrating() && !calibration.showKeys()) return;
         for (KeyboardLayout.Row row : layout.rows) {
             for (Key k : row.keys) if (k.type != Key.SPACER && k.type != Key.GAP && !k.hidden) drawKey(c, k);
         }
@@ -686,6 +925,7 @@ public final class KeyboardView extends View {
         if (keyShadow && !pressed) drawShadow(c, r);
         fill.setColor(bg);
         c.drawRoundRect(r, radius, radius, fill);
+        if (calibrating()) return;   // 보정 중에는 글자·아이콘 없이 키 모양만
 
         float cx = r.centerX(), cy = r.centerY();
         float iconSize = Math.min(r.height(), r.width()) * 0.52f;
@@ -793,6 +1033,13 @@ public final class KeyboardView extends View {
         long before = visualState();
         int action = e.getActionMasked();
         int idx = e.getActionIndex();
+        if (calibrating()) {
+            // 보정 문장을 치는 중: 글자를 입력하지 않고, 손가락이 닿은 곳만 기록한다 (밀어도 한 번 누른 것이다).
+            if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+                calibrationTap(e.getX(idx), e.getY(idx));
+            }
+            return true;
+        }
         switch (action) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -887,7 +1134,7 @@ public final class KeyboardView extends View {
     }
 
     private void down(int id, float x, float y) {
-        Key k = keyAt(x, y);
+        Key k = keyAtTouch(x, y);
         boolean gap = k != null && k.type == Key.SPACER && k.dragCursor && gapCursor;
         if (k == null || (!gap && (k.type == Key.SPACER || k.type == Key.GAP))) return;
         Pointer p = new Pointer();

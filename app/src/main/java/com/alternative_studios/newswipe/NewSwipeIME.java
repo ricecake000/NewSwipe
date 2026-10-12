@@ -44,6 +44,7 @@ import com.alternative_studios.newswipe.emoji.EmojiData;
 import com.alternative_studios.newswipe.emoji.EmojiPanel;
 import com.alternative_studios.newswipe.emoji.EmojiRepository;
 import com.alternative_studios.newswipe.hangul.HangulComposer;
+import com.alternative_studios.newswipe.keyboard.CalibrationSession;
 import com.alternative_studios.newswipe.keyboard.FunctionSwipes;
 import com.alternative_studios.newswipe.keyboard.ToolbarButtons;
 import com.alternative_studios.newswipe.keyboard.ToolbarSwipes;
@@ -54,6 +55,7 @@ import com.alternative_studios.newswipe.keyboard.KeyboardLayout;
 import com.alternative_studios.newswipe.keyboard.KeyboardTheme;
 import com.alternative_studios.newswipe.keyboard.KeyboardView;
 import com.alternative_studios.newswipe.keyboard.SwipeAction;
+import com.alternative_studios.newswipe.keyboard.TouchModel;
 import com.alternative_studios.newswipe.ui.ClipChip;
 import com.alternative_studios.newswipe.ui.IconButton;
 import com.alternative_studios.newswipe.ui.SwipeVertical;
@@ -101,6 +103,8 @@ public final class NewSwipeIME extends InputMethodService implements KeyboardVie
             0, 1, 30, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.LinkedBlockingQueue<>(),
             r -> new Thread(r, "NewSwipe-search"));
     private final Handler main = new Handler(Looper.getMainLooper());
+    /** 보정 화면(TouchCalibrationActivity)의 입력란에 붙어 있을 때의 터치 보정. 아니면 null. */
+    private CalibrationSession calibration;
 
     // 뷰
     private KeyboardTheme theme;
@@ -982,6 +986,7 @@ public final class NewSwipeIME extends InputMethodService implements KeyboardVie
         applySuggestLead();
         keyboard.setHitShrink(prefs.deleteHitShrink() ? prefs.deleteHitShrinkPct() / 100f : 0f,
                 prefs.spaceHitShrink() ? prefs.spaceHitShrinkPct() / 100f : 0f);
+        applyTouchCalibration();
         keyboard.setCharCursor(!prefs.swipeKeyboardCustom() && prefs.charCursor(),
                 prefs.charCursorH(), prefs.charCursorV());
         // 키보드 밀기: 완전 사용자화를 켜면 편집한 배치를, 끄면 '두 손가락으로 밀어서 실행 취소'만 쓴다.
@@ -1032,6 +1037,40 @@ public final class NewSwipeIME extends InputMethodService implements KeyboardVie
         keyboard.setKeyboardHeight(keyboardHeight);
         applyOneHand();
         updatePanelSizes();
+    }
+
+    // ---------------------------------------------------------------- 터치 보정
+
+    /** 이 입력란이 보정 화면의 입력란이고 보정이 진행 중이면 그 보정. */
+    private CalibrationSession calibrationFor(EditorInfo info) {
+        CalibrationSession s = CalibrationSession.active();
+        return s != null && info != null && getPackageName().equals(info.packageName)
+                && CalibrationSession.IME_OPTION.equals(info.privateImeOptions) ? s : null;
+    }
+
+    /**
+     * 터치 보정을 자판에 적용한다: 보정 화면에 붙어 있으면 지금 파지법으로 입력을 모으고, 아니면 지금 파지법
+     * (화면 방향·한 손 모드)의 보정 결과를 고른 방식(터치 위치·자판 모양)으로 쓴다.
+     */
+    private void applyTouchCalibration() {
+        String grip = Prefs.gripId(profile(), activeOneHand());
+        if (calibration != null && calibration.ended()) calibration = null;
+        if (calibration != null) calibration.setKeyboardListener(this::onCalibrationChanged);
+        keyboard.setCalibration(calibration, grip);
+        String mode = prefs.touchCalibrationMode();
+        TouchModel model = Prefs.TOUCH_CALIB_OFF.equals(mode) ? null : prefs.touchModel(grip);
+        keyboard.setTouchModel(model, Prefs.TOUCH_CALIB_LAYOUT.equals(mode));
+    }
+
+    /** 보정의 키 보이기가 바뀌었거나 보정이 끝났다. 끝났으면 평소 자판으로 돌아간다. */
+    private void onCalibrationChanged() {
+        if (keyboard == null) return;
+        keyboard.onCalibrationChanged();
+        if (calibration != null && calibration.ended()) {
+            calibration = null;
+            keyboard.setCalibration(null, null);
+            if (lettersLayout()) setLayoutKind(korean ? KeyboardLayout.KOREAN : KeyboardLayout.ENGLISH);
+        }
     }
 
     // ---------------------------------------------------------------- 한 손 모드
@@ -1148,6 +1187,7 @@ public final class NewSwipeIME extends InputMethodService implements KeyboardVie
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         windowHidden = false;   // 창이 실제로 보이기(onWindowShown) 전에 불리므로 여기서도 켠다
+        calibration = calibrationFor(info);
         if (KeyboardTheme.of(this) != theme) {
             setInputView(onCreateInputView());
         }
@@ -1180,6 +1220,8 @@ public final class NewSwipeIME extends InputMethodService implements KeyboardVie
         } else {
             setLayoutKind(korean ? KeyboardLayout.KOREAN : KeyboardLayout.ENGLISH);
         }
+        // 보정 문장은 보정 화면에서 고른 언어의 자판으로 친다 (한/영 설정은 바꾸지 않는다).
+        if (calibration != null) setLayoutKind(calibration.korean ? KeyboardLayout.KOREAN : KeyboardLayout.ENGLISH);
         keyboard.setEnterIcon(enterIcon(info));
         setShift(0);
         updateAutoCap();
