@@ -182,6 +182,17 @@ public final class Prefs {
     public static final String DELETE_HIT_SHRINK_PCT = "delete_hit_shrink_pct";   // %, 5~50
     public static final String SPACE_HIT_SHRINK = "space_hit_shrink";             // 스페이스바의 위쪽 터치 인식 범위 좁히기
     public static final String SPACE_HIT_SHRINK_PCT = "space_hit_shrink_pct";     // %, 5~50
+    /**
+     * 터치 보정의 적용 방식: 쓰지 않기, 터치 위치 보정(키는 그대로 두고 손가락이 닿은 곳을 누르려던 곳으로 고쳐 읽기),
+     * 자판 모양 보정(키를 손가락이 닿는 곳으로 옮겨 그리기).
+     */
+    public static final String TOUCH_CALIB_MODE = "touch_calib_mode";
+    public static final String TOUCH_CALIB_OFF = "off", TOUCH_CALIB_TOUCH = "touch", TOUCH_CALIB_LAYOUT = "layout";
+    /**
+     * 파지법마다 저장하는 터치 보정 결과 (TouchModel): 이 말 + 파지법 (gripId, 예: calib_port_both).
+     * 기기의 화면과 손에 맞춘 값이라 설정 내보내기에서는 뺀다.
+     */
+    public static final String CALIBRATION_PREFIX = "calib_";
     public static final String SETUP_DONE = "setup_done";   // 시작하기를 한 번 마쳤는지 (그전까지 설정 메뉴를 막는다)
     public static final String ONBOARDING_DONE = "onboarding_done";   // 첫 시작 가이드를 끝까지 봤는지
     public static final String SWIPE_IOTIZED = "swipe_iotized";           // 모음 키를 밀어 ㅣ계 이중모음 (ㅑ ㅕ ㅛ ㅠ ㅒ ㅖ)
@@ -334,7 +345,7 @@ public final class Prefs {
                 KEY_PREVIEW, POPUP_HINT_HIDDEN, NUMBER_HINT_HIDDEN, PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM, KEY_GAP_X, KEY_GAP_Y));
         MENU_KEYS.put("input", keys(AUTO_CAP, ENGLISH_FIELDS, DOUBLE_SPACE_PERIOD, DOUBLE_TAP_VOWEL, DOUBLE_TAP_CONSONANT,
                 DOUBLE_TAP_CONSONANT_MS, DELETE_HIT_SHRINK, DELETE_HIT_SHRINK_PCT, SPACE_HIT_SHRINK,
-                SPACE_HIT_SHRINK_PCT));
+                SPACE_HIT_SHRINK_PCT, TOUCH_CALIB_MODE));
         MENU_KEYS.put("keys", keys(LONG_PRESS_CHARS, LONG_PRESS_REPEAT, LONG_PRESS_MS, LONG_PRESS_DELETE, DELETE_PRESS_MS,
                 MODE_KEY_LONG_PRESS, LONG_PRESS_CUSTOM));
         MENU_PREFIXES.put("keys", keys("popup_", "repeat_", "swipe_lp_"));
@@ -609,6 +620,58 @@ public final class Prefs {
     public int deleteHitShrinkPct() { return sp.getInt(DELETE_HIT_SHRINK_PCT, 10); }
     public boolean spaceHitShrink() { return sp.getBoolean(SPACE_HIT_SHRINK, false); }
     public int spaceHitShrinkPct() { return sp.getInt(SPACE_HIT_SHRINK_PCT, 10); }
+
+    // ---------------------------------------------------------------- 터치 보정
+
+    /** 터치 보정의 적용 방식 (TOUCH_CALIB_*). 기본은 터치 위치 보정 (보정 결과가 없으면 아무 일도 하지 않는다). */
+    public String touchCalibrationMode() {
+        String v = sp.getString(TOUCH_CALIB_MODE, TOUCH_CALIB_TOUCH);
+        return TOUCH_CALIB_OFF.equals(v) || TOUCH_CALIB_LAYOUT.equals(v) ? v : TOUCH_CALIB_TOUCH;
+    }
+
+    /** 파지법을 나누는 화면 (PROFILE_*)과 한 손 모드 (ONE_HAND_*). 보정 화면이 이 차례로 보여 준다. */
+    public static final String[] GRIP_SCREENS = {PROFILE_PORTRAIT, PROFILE_LANDSCAPE, PROFILE_LARGE_PORTRAIT,
+            PROFILE_LARGE_LANDSCAPE};
+    public static final String[] GRIP_HANDS = {ONE_HAND_OFF, ONE_HAND_LEFT, ONE_HAND_RIGHT};
+
+    /**
+     * 파지법: 화면(세로·가로, 대화면 세로·가로)과 한 손 모드(끔·왼쪽·오른쪽)의 묶음. 쥐는 손과 손가락이 달라
+     * 손가락이 닿는 곳도 다르므로 터치 보정은 파지법마다 따로 저장한다 (예: "port_both", "land_right").
+     */
+    public static String gripId(String profile, String oneHand) {
+        String screen = profile.isEmpty() ? "port" : profile;
+        String hand = ONE_HAND_LEFT.equals(oneHand) ? "left" : ONE_HAND_RIGHT.equals(oneHand) ? "right" : "both";
+        return screen + "_" + hand;
+    }
+
+    /** 파지법의 이름 (예: "세로 · 한 손 모드 오른쪽"). */
+    public static String gripName(String grip) {
+        int cut = grip.lastIndexOf('_');
+        String screen = cut < 0 ? grip : grip.substring(0, cut), hand = cut < 0 ? "" : grip.substring(cut + 1);
+        String s;
+        switch (screen) {
+            case PROFILE_LANDSCAPE: s = "가로"; break;
+            case PROFILE_LARGE_PORTRAIT: s = "대화면 세로"; break;
+            case PROFILE_LARGE_LANDSCAPE: s = "대화면 가로"; break;
+            default: s = "세로"; break;
+        }
+        String h = "left".equals(hand) ? "한 손 모드 왼쪽" : "right".equals(hand) ? "한 손 모드 오른쪽" : "기본 자판";
+        return s + " · " + h;
+    }
+
+    /** 이 파지법의 터치 보정 결과. 없으면 null. */
+    public com.alternative_studios.newswipe.keyboard.TouchModel touchModel(String grip) {
+        return com.alternative_studios.newswipe.keyboard.TouchModel.parse(sp.getString(CALIBRATION_PREFIX + grip, null));
+    }
+
+    public void setTouchModel(String grip, com.alternative_studios.newswipe.keyboard.TouchModel model) {
+        sp.edit().putString(CALIBRATION_PREFIX + grip, model.serialize()).apply();
+    }
+
+    public void removeTouchModel(String grip) { sp.edit().remove(CALIBRATION_PREFIX + grip).apply(); }
+
+    /** 모든 파지법의 터치 보정 결과를 지운다. */
+    public void clearTouchModels() { removeKeys(NONE, new String[]{CALIBRATION_PREFIX}); }
     public boolean setupDone() { return sp.getBoolean(SETUP_DONE, false); }
     /**
      * 첫 시작 가이드를 마쳤는지. 가이드가 생기기 전부터 쓰던 사람(값이 없고 시작하기를 이미 마침)은 가이드를 띄우지 않는다.

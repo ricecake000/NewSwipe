@@ -89,6 +89,14 @@ final class SettingsFrame {
         }
     }
 
+    /** '키보드 열기' 버튼과 입력 시험 창 없이 머리글만 둔다 (화면이 따로 입력란을 쓸 때). */
+    private boolean noTestKeyboard;
+
+    SettingsFrame withoutTestKeyboard() {
+        this.noTestKeyboard = true;
+        return this;
+    }
+
     /** 키보드 열기 대신 검색 버튼과 검색창을 둔다. 검색창을 닫으면 빈 검색어로 알린다. */
     SettingsFrame withSearch(java.util.function.Consumer<String> onQuery) {
         this.onSearch = onQuery;
@@ -104,7 +112,7 @@ final class SettingsFrame {
         if (onSearch != null) {
             buildSearchBar();
             root.addView(searchBar, matchWrap());
-        } else {
+        } else if (!noTestKeyboard) {
             buildTestBar();
             root.addView(testBar, matchWrap());
         }
@@ -146,6 +154,7 @@ final class SettingsFrame {
             header.addView(searchButton, new LinearLayout.LayoutParams(size, size));
             return header;
         }
+        if (noTestKeyboard) return header;
         // 강조색 동그라미 안에 키보드 아이콘. 입력 시험 창이 열려 있으면 색을 뒤집어 알린다.
         testButton = circleButton(c, Icons.MENU_KEYBOARD, "키보드 열기", v -> toggleTestKeyboard());
         header.addView(testButton, new LinearLayout.LayoutParams(size, size));

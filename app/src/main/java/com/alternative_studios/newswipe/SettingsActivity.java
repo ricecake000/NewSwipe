@@ -367,6 +367,7 @@ public final class SettingsActivity extends Activity {
             {"input", "스페이스바 두 번으로 마침표", "점 온점 더블 스페이스"},
             {"input", "⌫ 버튼 인식 범위 좁히기", "지우기 백스페이스 오타 오입력 터치 영역"},
             {"input", "스페이스바 인식 범위 좁히기", "스페이스 오타 오입력 터치 영역"},
+            {"input", "터치 보정", "자동 보정 레이아웃 맞춤 오타 터치 위치 파지법 캘리브레이션 손가락"},
             {"swipe", "미는 거리", "스와이프 거리 민감도"},
             {"swipe", "ㅅ을 위로 밀어서 ㅆ 입력", "쌍시옷 스와이프"},
             {"swipe", "밀어서 쌍자음", "스와이프 된소리 ㄲ ㅃ"},
@@ -1655,6 +1656,11 @@ public final class SettingsActivity extends Activity {
                 "스페이스바의 위쪽 가장자리를 누르면 윗줄 키를 누른 것으로 간주해 스페이스바가 잘못 눌리는 일을 줄입니다.",
                 Prefs.SPACE_HIT_SHRINK, prefs.spaceHitShrink(), spaceShrink));
         input.addView(spaceShrink);
+
+        LinearLayout calibration = section("터치 보정");
+        calibration.addView(note("키가 보이지 않는 키보드로 예시 문장을 쳐서, 키를 누르려 할 때 손가락이 실제로 닿는 곳을 잽니다. "
+                + "그 결과로 키 인식 위치를 고치거나 자판 모양을 손에 맞게 바꿉니다. 화면 방향과 한 손 모드마다 따로 저장됩니다."));
+        calibration.addView(button("터치 보정", v -> startActivity(new Intent(this, TouchCalibrationActivity.class))));
     }
 
     private void buildSwipe() {

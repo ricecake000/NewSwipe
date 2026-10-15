@@ -38,7 +38,8 @@ public final class SettingsBackup {
 
     private static boolean excluded(String key) {
         return Prefs.RECENT_EMOJI.equals(key) || Prefs.PINNED_EMOJI.equals(key) || Prefs.LANGUAGE.equals(key)
-                || Prefs.ONE_HAND.equals(key) || Prefs.ONBOARDING_DONE.equals(key);
+                || Prefs.ONE_HAND.equals(key) || Prefs.ONBOARDING_DONE.equals(key)
+                || key.startsWith(Prefs.CALIBRATION_PREFIX);   // 이 기기의 화면과 손에 맞춘 터치 보정 결과
     }
 
     private static ComponentName launcherAlias(Context context) {
